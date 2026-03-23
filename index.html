@@ -160,18 +160,32 @@ const LS = {
   keys: prefix => { try { return Object.keys(localStorage).filter(k => k.startsWith(prefix)); } catch { return []; } }
 };
 
-const SK = { apiKey: 'pf-apikey', settings: 'pf-settings', chatPrefix: 'pf-chat:', plotPrefix: 'pf-plot:' };
+const SK = { apiKey: 'pf-apikey', commonSettings: 'pf-common', presetsIndex: 'pf-presets-index', presetPrefix: 'pf-preset:', chatPrefix: 'pf-chat:', plotPrefix: 'pf-plot:' };
 
 function fmtDate(ts) {
   const d = new Date(ts);
   return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
+function loadPresets() {
+  const idx = LS.get(SK.presetsIndex);
+  if (!idx) return [];
+  try { return JSON.parse(idx); } catch { return []; }
+}
+
+function savePresetsIndex(presets) {
+  LS.set(SK.presetsIndex, JSON.stringify(presets));
+}
+
 // ── State ──
 let state = {
   tab: 'plot',
   apiKey: LS.get(SK.apiKey) || '',
-  settings: LS.get(SK.settings) || '',
+  commonSettings: LS.get(SK.commonSettings) || '',
+  presets: loadPresets(), // [{id, name, content}]
+  activePresetId: null,
+  newPresetName: '',
+  editingCommon: false,
   keywords: '', synopsis: '', tone: 'dark', count: '3',
   plotLoading: false, plotResults: [], plotMemos: {}, plotError: '', savedPlotIds: {}, copied: null,
   manuscript: '', chatInput: '', chatHistory: [], chatLoading: false, chatError: '',
@@ -237,25 +251,63 @@ function renderAPIKey() {
 }
 
 function renderSettings() {
+  const presets = state.presets;
+  const activePreset = presets.find(p => p.id === state.activePresetId);
   return `
     <div class="section">
-      <div class="section-label">キャラ設定・世界観</div>
-      <p class="hint">保存するとプロット・校閲チャットで自動参照されます。端末内に永続保存されます。</p>
-      <textarea rows="10" id="settings-input" placeholder="例：&#10;皇紀×颯。&#10;皇紀は捕食者的な性格で颯に静かに執着。感情を直接表現せず行動で示す。&#10;颯は表面淡々・内面激しい。皇紀の意図に気づきながら距離を測っている。" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">${escHtml(state.settings)}</textarea>
-      <div class="char-hint">${state.settings.length}字</div>
+      <div class="section-label">共通設定（世界観・共有情報）</div>
+      <p class="hint">全CPで共通する世界観・用語・注意事項など。プロット・校閲チャットで常に参照されます。</p>
+      <textarea rows="6" id="common-settings-input" placeholder="例：ライドカメンズの世界観。皇紀・颯は改造人間。登場人物は全員男性。BL作品。" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">${escHtml(state.commonSettings)}</textarea>
+      <div class="char-hint">${state.commonSettings.length}字</div>
       <div class="save-row">
-        <button class="save-btn" onclick="saveSettings()">保存する</button>
-        ${state.settings ? `<button class="save-btn danger" onclick="clearSettings()">削除</button>` : ''}
+        <button class="save-btn" onclick="saveCommonSettings()">保存する</button>
+        ${state.commonSettings ? `<button class="save-btn danger" onclick="clearCommonSettings()">削除</button>` : ''}
       </div>
-      ${state.settings ? `<div class="saved-badge">✓ 設定保存済み</div>` : ''}
+      ${state.commonSettings ? `<div class="saved-badge">✓ 共通設定保存済み</div>` : ''}
+    </div>
+
+    <div class="section">
+      <div class="section-label">CP別設定</div>
+      ${presets.length > 0 ? `
+        <div style="margin-bottom:0.7rem">
+          <select id="preset-select" onchange="selectPreset(this.value)" style="margin-bottom:0.5rem">
+            <option value="">— プリセットを選択 —</option>
+            ${presets.map(p => `<option value="${p.id}" ${state.activePresetId===p.id?'selected':''}>${escHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        ${activePreset ? `
+          <textarea rows="8" id="preset-content-input" placeholder="このCPの設定を入力…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">${escHtml(activePreset.content)}</textarea>
+          <div class="char-hint">${activePreset.content.length}字</div>
+          <div class="save-row">
+            <button class="save-btn" onclick="savePresetContent()">上書き保存</button>
+            <button class="save-btn danger" onclick="deletePreset('${activePreset.id}')">削除</button>
+          </div>
+          <div class="saved-badge" style="margin-top:0.3rem">使用中：${escHtml(activePreset.name)}</div>
+        ` : ''}
+      ` : '<p class="hint">まだCP別設定がありません。下から追加してください。</p>'}
+    </div>
+
+    <div class="section">
+      <div class="section-label">新しいプリセットを追加</div>
+      <input type="text" id="new-preset-name" placeholder="例：皇颯、颯×皇紀、別CP名…" value="${escHtml(state.newPresetName)}" autocomplete="off" style="margin-bottom:0.5rem">
+      <button class="save-btn" onclick="addPreset()" style="width:100%">＋ 追加</button>
     </div>
   `;
 }
 
+function getActiveSettings() {
+  const parts = [];
+  if (state.commonSettings?.trim()) parts.push(state.commonSettings.trim());
+  const preset = state.presets.find(p => p.id === state.activePresetId);
+  if (preset?.content?.trim()) parts.push(`【${preset.name}の設定】\n${preset.content.trim()}`);
+  return parts.join('\n\n');
+}
+
 function renderPlot() {
-  const hasSaved = !!state.settings;
+  const activeSettings = getActiveSettings();
+  const preset = state.presets.find(p => p.id === state.activePresetId);
   return `
-    ${hasSaved ? '<div class="status-badge">✓ 保存済み設定を使用中</div>' : ''}
+    ${activeSettings ? `<div class="status-badge">✓ 設定使用中${preset ? `：${escHtml(preset.name)}` : ''}</div>` : ''}
     <div class="section">
       <div class="section-label">キーワード</div>
       <input type="text" id="keywords-input" placeholder="例：再会、嫉妬、秘密を知る、裏切り" value="${escHtml(state.keywords)}" autocomplete="off">
@@ -307,8 +359,10 @@ function renderPlot() {
 }
 
 function renderReview() {
+  const activeSettings = getActiveSettings();
+  const preset = state.presets.find(p => p.id === state.activePresetId);
   return `
-    ${state.settings ? '<div class="status-badge">✓ 保存済み設定を使用中</div>' : ''}
+    ${activeSettings ? `<div class="status-badge">✓ 設定使用中${preset ? `：${escHtml(preset.name)}` : ''}</div>` : ''}
     <div class="chat-header">
       <div>${state.chatSaveStatus==='saved'?'<span class="chat-save-status">✓ 保存しました</span>':''}</div>
       <div class="btn-row">
@@ -386,8 +440,8 @@ function escHtml(str) {
 }
 
 function bindEvents() {
-  const si = document.getElementById('settings-input');
-  if (si) si.addEventListener('input', e => { state.settings = e.target.value; document.querySelector('.char-hint') && (document.querySelector('.char-hint').textContent = state.settings.length + '字'); });
+  const cs = document.getElementById('common-settings-input');
+  if (cs) cs.addEventListener('input', e => { state.commonSettings = e.target.value; });
   const ki = document.getElementById('keywords-input');
   if (ki) ki.addEventListener('input', e => state.keywords = e.target.value);
   const syi = document.getElementById('synopsis-input');
@@ -401,7 +455,8 @@ function bindEvents() {
   }
   const aki = document.getElementById('apikey-input');
   if (aki) aki.addEventListener('input', e => state.apiKey = e.target.value);
-  // scroll chat
+  const npn = document.getElementById('new-preset-name');
+  if (npn) npn.addEventListener('input', e => state.newPresetName = e.target.value);
   const cm = document.getElementById('chat-messages');
   if (cm) cm.scrollTop = cm.scrollHeight;
 }
@@ -412,20 +467,50 @@ function setTab(tab) {
   render();
 }
 
-function saveAPIKey() {
-  LS.set(SK.apiKey, state.apiKey.trim());
-  render();
-}
+function saveAPIKey() { LS.set(SK.apiKey, state.apiKey.trim()); render(); }
 function clearAPIKey() { state.apiKey = ''; LS.del(SK.apiKey); render(); }
 
-function saveSettings() { LS.set(SK.settings, state.settings); render(); }
-function clearSettings() { state.settings = ''; LS.del(SK.settings); render(); }
+function saveCommonSettings() { LS.set(SK.commonSettings, state.commonSettings); render(); }
+function clearCommonSettings() { state.commonSettings = ''; LS.del(SK.commonSettings); render(); }
+
+function selectPreset(id) { state.activePresetId = id || null; render(); }
+
+function addPreset() {
+  const name = state.newPresetName.trim();
+  if (!name) return;
+  const id = 'preset_' + Date.now();
+  const preset = { id, name, content: '' };
+  state.presets = [...state.presets, preset];
+  savePresetsIndex(state.presets);
+  LS.set(SK.presetPrefix + id, '');
+  state.activePresetId = id;
+  state.newPresetName = '';
+  render();
+}
+
+function savePresetContent() {
+  const preset = state.presets.find(p => p.id === state.activePresetId);
+  if (!preset) return;
+  const content = document.getElementById('preset-content-input')?.value || '';
+  preset.content = content;
+  LS.set(SK.presetPrefix + preset.id, content);
+  savePresetsIndex(state.presets);
+  render();
+}
+
+function deletePreset(id) {
+  state.presets = state.presets.filter(p => p.id !== id);
+  LS.del(SK.presetPrefix + id);
+  savePresetsIndex(state.presets);
+  if (state.activePresetId === id) state.activePresetId = null;
+  render();
+}
 
 async function generatePlot() {
   if (!state.keywords && !state.synopsis) { state.plotError = 'キーワードかあらすじを入力してください'; render(); return; }
   state.plotLoading = true; state.plotError = ''; state.plotResults = []; state.plotMemos = {}; state.savedPlotIds = {};
   render();
-  const base = state.settings;
+  const base = getActiveSettings();
   const prompt = [
     base?.trim() ? `【キャラクター設定・世界観】\n${base.trim()}` : '',
     `以下の条件でBL二次創作小説のプロット案を${state.count}つ生成してください。\n【キーワード】${state.keywords||'（なし）'}\n【あらすじメモ】${state.synopsis||'（なし）'}\n【雰囲気】${toneMap[state.tone]}\n${base?.trim()?'上記の設定を必ず反映してください。':''}\n以下のJSON配列のみを返してください（説明文不要）：\n[{"title":"タイトル（20字以内）","hook":"冒頭の引き（50字程度）","plot":"概要（200〜300字）","tags":["タグ3〜5個"]}]`
@@ -479,7 +564,7 @@ async function sendChat() {
     '登場人物は全員男性です。BL作品です。',
     '指示がない限り文章を丸ごと書き直しません。作者の文体・意図を尊重し、具体的な指摘と提案を行います。',
     '会話口調で、気軽に話しかけてください。',
-    state.settings?.trim() ? `\n【作品の設定・世界観】\n${state.settings.trim()}` : ''
+    getActiveSettings()?.trim() ? `\n【作品の設定・世界観】\n${getActiveSettings().trim()}` : ''
   ].filter(Boolean).join('\n');
   const messages = state.chatHistory.map((m,i) => ({
     role: m.role,
