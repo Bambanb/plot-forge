@@ -416,7 +416,10 @@ function renderChatLogs() {
       ${state.expandedLog===log.key ? `
         <div class="history-body">
           ${(log.messages||[]).map(m=>`<div class="history-msg ${m.role}">${m.role==='user'?'› ':''}${escHtml(m.content)}</div>`).join('')}
-          <button class="history-del" onclick="deleteChatLog('${log.key}')">この履歴を削除</button>
+          <div style="display:flex;gap:0.5rem;margin-top:0.7rem">
+            <button class="save-btn" style="font-size:0.78rem;min-height:40px" onclick="resumeChat('${log.key}')">この会話を再開</button>
+            <button class="history-del" style="padding:0 0.5rem" onclick="deleteChatLog('${log.key}')">削除</button>
+          </div>
         </div>
       ` : ''}
     </div>
@@ -588,6 +591,19 @@ async function sendChat() {
 }
 
 function startNewChat() { state.chatHistory = []; state.manuscript = ''; state.chatError = ''; state.chatInput = ''; state.currentChatKey = null; state.chatSaveStatus = ''; render(); }
+
+function resumeChat(key) {
+  const log = state.chatLogs.find(l => l.key === key);
+  if (!log || !log.messages) return;
+  state.chatHistory = log.messages;
+  state.currentChatKey = key;
+  state.manuscript = '';
+  state.chatInput = '';
+  state.chatError = '';
+  state.chatSaveStatus = '';
+  state.tab = 'review';
+  render();
+}
 
 function loadChatLogs() {
   const keys = LS.keys(SK.chatPrefix);
